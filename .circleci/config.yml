@@ -1,0 +1,90 @@
+version: 2
+jobs:
+  build:
+    docker:
+      - image: circleci/openjdk:8-jdk
+        environment:
+          DEBIAN_FRONTEND: "noninteractive"
+    steps:
+      - checkout
+      - run:
+          name: Test and build
+          command: |
+            ./gradlew clean build
+            mkdir artifacts
+            cp build/libs/pal-tracker.jar artifacts/pal-tracker-$CIRCLE_SHA1.jar
+
+      - store_artifacts:
+          path: artifacts
+
+      - persist_to_workspace:
+          root: artifacts
+          paths:
+            - pal-tracker-*.jar
+
+  deployToReview:
+    docker:
+      - image: circleci/openjdk:8-jdk
+        environment:
+          DEBIAN_FRONTEND: "noninteractive"
+          ENVIRONMENT: review
+    steps:
+      - checkout
+      - attach_workspace:
+          at: artifacts
+      - run:
+          name: Install CF CLI
+          command: |
+            sudo apt-get update
+            sudo apt-get -y install apt-transport-https ca-certificates
+            wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo apt-key add -
+            echo "deb https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
+            sudo apt-get update
+            sudo apt-get install cf-cli
+
+      - run:
+          name: Deploy to review
+          command: |
+            cf login -a $CF_API -u $CF_USERNAME -p $CF_PASSWORD -o $CF_ORG -s $ENVIRONMENT
+            cf push -f manifest-$ENVIRONMENT.yml -p artifacts/pal-tracker-$CIRCLE_SHA1.jar
+
+  deployToProd:
+    docker:
+      - image: circleci/openjdk:8-jdk
+        environment:
+          DEBIAN_FRONTEND: "noninteractive"
+          ENVIRONMENT: production
+    steps:
+      - checkout
+      - attach_workspace:
+          at: artifacts
+      - run:
+          name: Install CF CLI
+          command: |
+            sudo apt-get update
+            sudo apt-get -y install apt-transport-https ca-certificates
+            wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo apt-key add -
+            echo "deb https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
+            sudo apt-get update
+            sudo apt-get install cf-cli
+
+      - run:
+          name: Deploy to prod
+          command: |
+            cf login -a $CF_API -u $CF_USERNAME -p $CF_PASSWORD -o $CF_ORG -s $ENVIRONMENT
+            cf push -f manifest-$ENVIRONMENT.yml -p artifacts/pal-tracker-$CIRCLE_SHA1.jar
+workflows:
+  version: 2
+  deployment-pipeline:
+    jobs:
+      - build
+      - deployToReview:
+          requires:
+          - build
+      - canDeployToProduction:
+          type: approval
+          requires:
+           - deployToReview
+      - deployToProd:
+          requires:
+            - canDeployToProduction
